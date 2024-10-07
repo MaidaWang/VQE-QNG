@@ -243,6 +243,32 @@ class VQE_Driver:
     #
     #     return np.asarray(grad_vec)
 
+from qiskit.opflow import NaturalGradient
+
+def gradient(self, x: np.array) -> np.array:
+    """
+    Compute the natural gradient using Qiskit's NaturalGradient method.
+
+    Args:
+        x (np.array): Parameter vector
+
+    Returns:
+        Natural gradient (np.array)
+    """
+    # Instantiate the NaturalGradient object
+    nat_grad = NaturalGradient(grad_method='param_shift', qfi_method='overlap_diag')
+
+    # Bind parameters to your circuit
+    circuit = self.circuit.bind_parameters(x)
+
+    # Apply the NaturalGradient conversion for the observable and circuit
+    natural_gradient_op = nat_grad.convert(self.observable, circuit)
+
+    # Evaluate the natural gradient
+    natural_gradient = natural_gradient_op.eval()
+
+    return natural_gradient
+
     def compute_fisher_information(self, x: np.array) -> np.array:
         """
         Compute the Fisher information matrix for the given parameter vector.
