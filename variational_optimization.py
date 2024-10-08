@@ -205,7 +205,56 @@ class VQE_Driver:
         else:
             state = self.get_state(self.circuit, x)
         return self._f(self.observable, state)
+import numpy as np
+
+def spsa_gradient(self, x: np.array, perturbation: float = 1e-3, resamplings: int = 1) -> np.array:
+    """
+    Compute the natural gradient using SPSA-based approximation of the Fisher information matrix.
+    
+    Args:
+        x (np.array): Parameter vector.
+        perturbation (float): Perturbation size for SPSA gradient estimation.
+        resamplings (int): Number of resamplings to estimate the Fisher information matrix.
+    
+    Returns:
+        np.array: Natural gradient.
+    """
+    num_params = len(x)
+    
+    # Initialize gradient and Fisher information matrix
+    grad_estimation = np.zeros(num_params)
+    fisher_info_matrix = np.zeros((num_params, num_params))
+    
+    for _ in range(resamplings):
+        # Generate random perturbation vector (delta)
+        delta = 2 * np.random.randint(2, size=num_params) - 1  # Random +1/-1 vector
         
+        # Perturb the parameters in both directions
+        x_plus = x + perturbation * delta
+        x_minus = x - perturbation * delta
+        
+        # Evaluate the cost function at perturbed points
+        f_plus = self.f(x_plus)
+        f_minus = self.f(x_minus)
+        
+        # Compute SPSA gradient approximation
+        grad_estimation += (f_plus - f_minus) / (2 * perturbation) * delta
+        
+        # Compute Fisher information matrix approximation
+        fisher_info_matrix += np.outer(delta, delta)
+    
+    # Average over resamplings
+    grad_estimation /= resamplings
+    fisher_info_matrix /= resamplings
+    
+    # Regularize Fisher information matrix to avoid singularity
+    fisher_info_matrix += 1e-3 * np.eye(num_params)  # Small regularization term
+    
+    # Compute natural gradient by multiplying with inverse Fisher information matrix
+    natural_gradient = np.linalg.inv(fisher_info_matrix) @ grad_estimation
+    
+    return natural_gradient
+
     # def partial_derivative(self, x: np.array, param_index: int) -> float:
     #     """
     #     Get the partial derivative with respect to an ansatz parameter
