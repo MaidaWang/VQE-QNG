@@ -1,8 +1,14 @@
 from cached_property import cached_property
+from cirq.circuits.moment import circuits
+from numba.np.arrayobj import np_array
 # from qiskit.quantum_info import Statevector
-from qiskit.opflow import CircuitStateFn
+from qiskit.opflow import CircuitStateFn, NaturalGradient, PauliSumOp
 from qiskit import QuantumCircuit
+from qiskit.primitives.utils import bound_circuit_to_instruction
 from symmer import QuantumState, PauliwordOp
+from sympy.physics.vector import gradient
+from sympy.physics.vector.printing import params
+
 from nbed.process_handler import process
 from symmer.operators.utils import (
     symplectic_to_string, safe_PauliwordOp_to_dict, safe_QuantumState_to_dict
@@ -17,6 +23,8 @@ from itertools import combinations
 from networkx import Graph, draw_spring
 from networkx.algorithms.isomorphism.isomorphvf2 import GraphMatcher
 from collections import Counter
+from qiskit.algorithms.optimizers import QNSPSA
+
 
 def get_CNOT_connectivity_graph(evolution_obj:Union[PauliwordOp,QuantumCircuit], print_graph=False):
     """ 
@@ -189,9 +197,9 @@ class VQE_Driver:
             return (state.dagger * observable * state).real   
         elif self.expectation_eval == 'observable_rotation':
             return (self.ref_state.dagger * observable.perform_rotations(state) * self.ref_state).real
-        
+
     def f(self, x: np.array) -> float:
-        """ 
+        """
         Given a parameter vector, bind to the circuit and retrieve expectation value.
 
         Args:
@@ -205,56 +213,7 @@ class VQE_Driver:
         else:
             state = self.get_state(self.circuit, x)
         return self._f(self.observable, state)
-import numpy as np
-
-def spsa_gradient(self, x: np.array, perturbation: float = 1e-3, resamplings: int = 1) -> np.array:
-    """
-    Compute the natural gradient using SPSA-based approximation of the Fisher information matrix.
-    
-    Args:
-        x (np.array): Parameter vector.
-        perturbation (float): Perturbation size for SPSA gradient estimation.
-        resamplings (int): Number of resamplings to estimate the Fisher information matrix.
-    
-    Returns:
-        np.array: Natural gradient.
-    """
-    num_params = len(x)
-    
-    # Initialize gradient and Fisher information matrix
-    grad_estimation = np.zeros(num_params)
-    fisher_info_matrix = np.zeros((num_params, num_params))
-    
-    for _ in range(resamplings):
-        # Generate random perturbation vector (delta)
-        delta = 2 * np.random.randint(2, size=num_params) - 1  # Random +1/-1 vector
         
-        # Perturb the parameters in both directions
-        x_plus = x + perturbation * delta
-        x_minus = x - perturbation * delta
-        
-        # Evaluate the cost function at perturbed points
-        f_plus = self.f(x_plus)
-        f_minus = self.f(x_minus)
-        
-        # Compute SPSA gradient approximation
-        grad_estimation += (f_plus - f_minus) / (2 * perturbation) * delta
-        
-        # Compute Fisher information matrix approximation
-        fisher_info_matrix += np.outer(delta, delta)
-    
-    # Average over resamplings
-    grad_estimation /= resamplings
-    fisher_info_matrix /= resamplings
-    
-    # Regularize Fisher information matrix to avoid singularity
-    fisher_info_matrix += 1e-3 * np.eye(num_params)  # Small regularization term
-    
-    # Compute natural gradient by multiplying with inverse Fisher information matrix
-    natural_gradient = np.linalg.inv(fisher_info_matrix) @ grad_estimation
-    
-    return natural_gradient
-
     # def partial_derivative(self, x: np.array, param_index: int) -> float:
     #     """
     #     Get the partial derivative with respect to an ansatz parameter
@@ -292,99 +251,8 @@ def spsa_gradient(self, x: np.array, perturbation: float = 1e-3, resamplings: in
     #
     #     return np.asarray(grad_vec)
 
-def gradient(self, x: np.array) -> np.array:
-    """
-    Compute the quantum natural gradient using Qiskit's NaturalGradient method.
-    
-    Args:
-        x (np.array): Parameter vector.
 
-    Returns:
-        np.array: Natural gradient.
-    """
-    # Bind parameters to the circuit
-    bound_circuit = self.circuit.bind_parameters(x)
-    
-    # Define the expectation value as a CircuitStateFn (expectation of observable on the circuit)
-    operator = CircuitStateFn(self.observable @ bound_circuit)
-    
-    # Create a NaturalGradient object from Qiskit (using Ridge regularization)
-    nat_grad = NaturalGradient(regularization='ridge')  # Regularization can be configured
-    
-    # Compute the natural gradient
-    natural_gradient = nat_grad.compute_grad(operator, self.circuit.parameters)
-    
-    return np.asarray(natural_gradient)
-
-
-    def compute_fisher_information(self, x: np.array) -> np.array:
-        """
-        Compute the Fisher information matrix for the given parameter vector.
-
-        Args:
-            x (np.array): Parameter vector
-
-        Returns:
-            Fisher information matrix (np.array)
-        """
-        num_parameters = len(x)
-        fisher_information = np.zeros((num_parameters, num_parameters))
-
-        # 计算每个参数的期望值
-        for i in range(num_parameters):
-            for j in range(num_parameters):
-                # 计算偏导数
-                partial_i = self.evaluate_partial_derivative(x, i)
-                partial_j = self.evaluate_partial_derivative(x, j)
-
-                # 计算费舍尔信息矩阵的元素
-                fisher_information[i, j] = partial_i * partial_j
-
-        return fisher_information
-
-    def evaluate_partial_derivative(self, x: np.array, param_index: int, delta=1e-8) -> float:
-        """
-        Calculate the partial derivative of the expectation value with respect to a parameter.
-
-        Args:
-            x (np.array): Parameter vector
-            param_index (int): Index of the parameter to differentiate
-            delta (float): Small change for numerical differentiation
-
-        Returns:
-            Partial derivative (float)
-        """
-        x_plus = np.copy(x)
-        x_minus = np.copy(x)
-
-        # 增加和减少参数值
-        x_plus[param_index] += delta
-        x_minus[param_index] -= delta
-
-        # 计算期望值
-        f_plus = self.f(x_plus)
-        f_minus = self.f(x_minus)
-
-        # 使用中心差分法计算偏导数
-        return (f_plus - f_minus) / (2 * delta)
-
-    def gradient(self, x: np.array) -> np.array:
-        fisher_information_matrix = self.compute_fisher_information(x)
-
-        # 正则化
-        regularization_strength = 1e-5
-        fisher_information_matrix += regularization_strength * np.eye(fisher_information_matrix.shape[0])
-
-        grad = np.zeros(self.circuit.num_parameters)
-
-        for i in range(self.circuit.num_parameters):
-            grad[i] = self.evaluate_partial_derivative(x, i)
-
-        # 使用伪逆代替常规逆
-        natural_gradient = np.linalg.pinv(fisher_information_matrix).dot(grad)
-
-        return np.asarray(natural_gradient)
-
+    # # ZIJIXIEDE VQE-QNG
     # def compute_fisher_information(self, x: np.array) -> np.array:
     #     """
     #     Compute the Fisher information matrix for the given parameter vector.
@@ -402,63 +270,172 @@ def gradient(self, x: np.array) -> np.array:
     #     for i in range(num_parameters):
     #         for j in range(num_parameters):
     #             # 计算偏导数
-    #             partial_i = self.partial_derivative(x, i)
-    #             partial_j = self.partial_derivative(x, j)
+    #             partial_i = self.evaluate_partial_derivative(x, i)
+    #             partial_j = self.evaluate_partial_derivative(x, j)
     #
     #             # 计算费舍尔信息矩阵的元素
     #             fisher_information[i, j] = partial_i * partial_j
     #
     #     return fisher_information
     #
-    # def partial_derivative(self, x: np.array, param_index: int) -> float:
+    # def evaluate_partial_derivative(self, x: np.array, param_index: int) -> float:
     #     """
-    #     Get the natural gradient with respect to an ansatz parameter
-    #     using the Quantum Natural Gradient method.
+    #     Get the partial derivative with respect to an ansatz parameter
+    #     by the parameter shift rule.
     #
     #     Args:
     #         x (np.array): Parameter vector
-    #         param_index (int): Parameter index
+    #         param_index (int): Prarameter index
     #
     #     Returns:
-    #         Natural gradient (float) with respect to an ansatz parameter.
+    #         Partial derivative(float) with respect to an ansatz parameter.
     #     """
-    #     # 计算当前参数下的梯度
-    #     grad = self.gradient(x)  # 这可以是传统的梯度计算
-    #
-    #     # 计算费舍尔信息矩阵
-    #     fisher_information_matrix = self.compute_fisher_information(x)
-    #
-    #     # 计算自然梯度
-    #     # 这里假设 fisher_information_matrix 是可逆的
-    #     natural_gradient = np.linalg.inv(fisher_information_matrix).dot(grad)
-    #
-    #     return natural_gradient[param_index]
+    #     x_upper = x.copy(); x_upper[param_index]+=np.pi/4
+    #     x_lower = x.copy(); x_lower[param_index]-=np.pi/4
+    #     return self.f(x_upper) - self.f(x_lower)
     #
     # def gradient(self, x: np.array) -> np.array:
-    #     """
-    #     Get the ansatz parameter gradient using Quantum Natural Gradient method.
-    #
-    #     Args:
-    #         x (np.array): Parameter vector
-    #
-    #     Returns:
-    #         Ansatz parameter natural gradient (np.array)
-    #     """
-    #     # 计算费舍尔信息矩阵
     #     fisher_information_matrix = self.compute_fisher_information(x)
+    #     # 正则化
+    #     regularization_strength = 1e-4
+    #     fisher_information_matrix += regularization_strength * np.eye(fisher_information_matrix.shape[0])
     #
-    #     # 计算当前参数的梯度
     #     grad = np.zeros(self.circuit.num_parameters)
     #
     #     for i in range(self.circuit.num_parameters):
-    #         grad[i] = self.partial_derivative(x, i)
+    #         grad[i] = self.evaluate_partial_derivative(x, i)
     #
-    #     # 计算自然梯度
-    #     natural_gradient = np.linalg.inv(fisher_information_matrix).dot(grad)
-    #
+    #     # 使用伪逆代替常规逆
+    #     # natural_gradient = np.linalg.pinv(fisher_information_matrix).dot(grad)
+    #     # IF IT'S NOT SINGULAR MATRIX
+    #     step_size = 0.1
+    #     natural_gradient = step_size * np.linalg.inv(fisher_information_matrix).dot(grad)
     #     return np.asarray(natural_gradient)
+    # QISKIT QNG
+    def compute_fisher_information(self, x: np.array) -> np.array:
+        """
+        Compute the Fisher information matrix for the given parameter vector.
+
+        Args:
+            x (np.array): Parameter vector
+
+        Returns:
+            Fisher information matrix (np.array)
+        """
+        num_parameters = len(x)
+        fisher_information = np.zeros((num_parameters, num_parameters))
+
+        # Use Qiskit's Natural Gradient method to estimate the Fisher information matrix.
+        nat_grad = NaturalGradient(regularization='ridge')
+        # 将 PauliwordOp 转换为 PauliSumOp
+        pauli_op = PauliSumOp.from_list([('ZIZ', 1)])  # 根据你的具体泡利算符来定义
+
+        # 将 QuantumCircuit 和 PauliSumOp 结合成 CircuitStateFn
+        bound_circuit = CircuitStateFn(self.circuit.bind_parameters(x))
+        operator = pauli_op @ bound_circuit  # 这里使用 Qiskit 的 PauliSumOp
+        fisher_information = nat_grad.compute_fisher_information(operator, self.circuit.parameters)
+
+        return np.asarray(fisher_information)
+
+    def gradient(self, x: np.array) -> np.array:
+        """
+        Compute the quantum natural gradient using Qiskit's QNSPSA method.
+
+        Args:
+            x (np.array): Parameter vector.
+
+        Returns:
+            np.array: Natural gradient.
+        """
+        # 将 PauliwordOp 转换为 PauliSumOp
+        pauli_op = PauliSumOp.from_list([('ZIZ', 1)])  # 这里你可以根据你的 PauliwordOp 内容来定义
+
+        # 将 QuantumCircuit 和 PauliSumOp 结合成 CircuitStateFn
+        bound_circuit = CircuitStateFn(self.circuit.bind_parameters(x))
+        operator = pauli_op @ bound_circuit
+
+        # 使用 QNSPSA 进行自然梯度优化
+        qnspsa_optimizer = QNSPSA(fidelity=self.get_fidelity_function())
+
+        # 这里你可以调用 QNSPSA 的优化方法（返回自然梯度）
+        result = qnspsa_optimizer.minimize(lambda p: self.f(p), x0=x)
+
+        return np.asarray(result.x)
+
+    def evaluate_partial_derivative(self, x: np.array, param_index: int, delta=1e-8) -> float:
+        """
+        Calculate the partial derivative of the expectation value with respect to a parameter.
+
+        Args:
+            x (np.array): Parameter vector
+            param_index (int): Index of the parameter to differentiate
+            delta (float): Small change for numerical differentiation
+
+        Returns:
+            Partial derivative (float)
+        """
+        x_plus = np.copy(x)
+        x_minus = np.copy(x)
+
+        # Add and subtract small delta to compute the finite difference
+        x_plus[param_index] += delta
+        x_minus[param_index] -= delta
+
+        # Compute expectation values
+        f_plus = self.f(x_plus)
+        f_minus = self.f(x_minus)
+
+        # Central difference method for partial derivative
+        return (f_plus - f_minus) / (2 * delta)
+
+    # #spsa-QN
+    # def gradient(self, x: np.array, perturbation: float = 1e-3, resamplings: int = 1) -> np.array:
+    #     """
+    #     Compute the natural gradient using SPSA-based approximation of the Fisher information matrix.
     #
+    #     Args:
+    #         x (np.array): Parameter vector.
+    #         perturbation (float): Perturbation size for SPSA gradient estimation.
+    #         resamplings (int): Number of resamplings to estimate the Fisher information matrix.
     #
+    #     Returns:
+    #         np.array: Natural gradient.
+    #     """
+    #     num_params = len(x)
+    #
+    #     # Initialize gradient and Fisher information matrix
+    #     grad_estimation = np.zeros(num_params)
+    #     fisher_info_matrix = np.zeros((num_params, num_params))
+    #
+    #     for _ in range(resamplings):
+    #         # Generate random perturbation vector (delta)
+    #         delta = 2 * np.random.randint(2, size=num_params) - 1  # Random +1/-1 vector
+    #
+    #         # Perturb the parameters in both directions
+    #         x_plus = x + perturbation * delta
+    #         x_minus = x - perturbation * delta
+    #
+    #         # Evaluate the cost function at perturbed points
+    #         f_plus = self.f(x_plus)
+    #         f_minus = self.f(x_minus)
+    #
+    #         # Compute SPSA gradient approximation
+    #         grad_estimation += (f_plus - f_minus) / (2 * perturbation) * delta
+    #
+    #         # Compute Fisher information matrix approximation
+    #         fisher_info_matrix += np.outer(delta, delta)
+    #
+    #     # Average over resamplings
+    #     grad_estimation /= resamplings
+    #     fisher_info_matrix /= resamplings
+    #
+    #     # Regularize Fisher information matrix to avoid singularity
+    #     fisher_info_matrix += 1e-2 * np.eye(num_params)  # Small regularization term
+    #
+    #     # Compute natural gradient by multiplying with inverse Fisher information matrix
+    #     natural_gradient = np.linalg.inv(fisher_info_matrix) @ grad_estimation
+    #
+    #     return natural_gradient
 
     def run(self, x0:np.array=None, **kwargs):
         """ 
@@ -667,31 +644,31 @@ class ADAPT_VQE(VQE_Driver):
                 self.adapt_operator += excitation
             else:
                 self.adapt_operator = self.adapt_operator.append(excitation)
-        
-    def optimize(self, 
-            max_cycles:int=10, gtol:float=1e-3, atol:float=1e-10, 
-            target:float=0, target_error:float=1e-3
-        ):
-        """ 
+
+    def optimize(self,
+                 max_cycles: int = 10, gtol: float = 1e-3, atol: float = 1e-10,
+                 target: float = 0, target_error: float = 1e-3
+                 ):
+        """
         Perform the ADAPT-VQE optimization
 
         Args:
-            gtol: gradient throeshold below which optimization will terminate
+            gtol: gradient threshold below which optimization will terminate
             atol: if the difference between successive expectation values is below this threshold, terminate
             max_cycles: maximum number of ADAPT cycles to perform
             target: if a target energy is known, this may be specified here
-            target_error: the absoluate error threshold with respect to the target energy 
+            target_error: the absoluate error threshold with respect to the target energy
         """
-        interim_data = {'history':[]}
-        adapt_cycle=1
-        gmax=1
-        anew=1
-        aold=0
-        
+        interim_data = {'history': []}
+        adapt_cycle = 1
+        gmax = 1
+        anew = 1
+        aold = 0
+
         while (
-                gmax>gtol and adapt_cycle<=max_cycles and 
-                abs(anew-aold)>atol and abs(anew-target)>target_error
-            ):
+                gmax > gtol and adapt_cycle <= max_cycles and
+                abs(anew - aold) > atol and abs(anew - target) > target_error
+        ):
             # save the previous gmax to compare for the gdiff check
             aold = deepcopy(anew)
             # calculate gradient across the pool and select term with the largest derivative
@@ -713,43 +690,85 @@ class ADAPT_VQE(VQE_Driver):
                         break
             else:
                 new_excitation_list = [self.excitation_pool[grad_rank[0]]]
-                
+
             # append new term(s) to the adapt_operator that stores our ansatz as it expands
             n_new_terms = len(new_excitation_list)
             self.append_to_adapt_operator(new_excitation_list)
-                        
+
             if self.verbose:
-                print('-'*39)
-                print(f'ADAPT cycle {adapt_cycle}\n')
-                print(f'Largest pool derivative ∂P∂θ = {gmax: .5f}\n')
-                print('Selected excitation generator(s):\n')
-                for op in new_excitation_list:
-                    print(f'\t{symplectic_to_string(op.symp_matrix[0])}')
-                print('\n', '-'*39)
-            
-            # having selected a new term to append to the ansatz, reoptimize with VQE
-            self.prepare_for_evolution(self.adapt_operator)
-            opt_out, vqe_hist = self.run(
-                x0=np.append(self.opt_parameters, [0]*n_new_terms), method='BFGS'
-            )
-            interim_data[adapt_cycle] = {
-                'output':opt_out, 'history':vqe_hist, 'gmax':gmax, 
-                'excitation': [symplectic_to_string(t.symp_matrix[0]) for t in new_excitation_list]
-            }
-            anew = opt_out['fun']
-            interim_data['history'].append(anew)
-            if self.verbose:
-                print(F'\nEnergy at ADAPT cycle {adapt_cycle}: {anew: .5f}\n')
-            self.opt_parameters = opt_out['x']
-            adapt_cycle+=1
+                print('-' * 39)
+                print(f'ADAPT cycle {adapt_cycle}')
+                print(f'Largest pool derivative ∂P∂θ = {gmax: .5f}')
+                print('Selected excitation generator(s):')
+            for op in new_excitation_list:
+                print(f'	{symplectic_to_string(op.symp_matrix[0])}')
+                print('', ' - '*39)
+
+                # Replacing BFGS optimization with natural gradient optimization
+                self.prepare_for_evolution(self.adapt_operator)
+
+                opt_out = self.natural_gradient_optimization(
+                    x0=np.append(self.opt_parameters, [0] * n_new_terms), max_steps=100
+                )
+
+                anew = opt_out['fun']
+                interim_data[adapt_cycle] = {
+                    'output': opt_out, 'gmax': gmax,
+                    'excitation': [symplectic_to_string(t.symp_matrix[0]) for t in new_excitation_list]
+                }
+                interim_data['history'].append(anew)
+
+                if self.verbose:
+                    print(F' Energy at ADAPT cycle {adapt_cycle}: {anew: .5f}')
+
+                self.opt_parameters = opt_out['x']
+                adapt_cycle += 1
 
         return {
-            'result': opt_out, 
+            'result': opt_out,
             'interim_data': interim_data,
             'ref_state': safe_QuantumState_to_dict(self.ref_state),
             'adapt_operator': [symplectic_to_string(t) for t in self.adapt_operator.symp_matrix]
         }
-    
+
+    def natural_gradient_optimization(self, x0, max_steps=100, learning_rate=0.1):
+        """
+        Perform natural gradient optimization for the given parameters.
+
+        Args:
+            x0 (np.array): Initial parameter vector.
+            max_steps (int): Maximum number of optimization steps.
+            learning_rate (float): Step size for gradient descent.
+
+        Returns:
+            opt_out (dict): Optimized parameters and function value.
+        """
+        x = x0.copy()
+        history = {'params': [], 'energy': []}
+
+        for step in range(max_steps):
+            # Compute the natural gradient
+            grad = self.gradient(x)
+
+            # Update the parameters using gradient descent
+            x -= learning_rate * grad
+
+            # Evaluate the function value (energy)
+            energy = self.f(x)
+
+            history['params'].append(x.copy())
+            history['energy'].append(energy)
+
+            if self.verbose:
+                print(f'Step {step}, Energy: {energy:.5f}')
+
+            # Check for convergence (optional, based on energy difference or gradient norm)
+            if step > 1 and abs(history['energy'][-1] - history['energy'][-2]) < 1e-6:
+                break
+
+        return {'x': x, 'fun': energy}
+
+
 def serialize_opt_data(opt_data):
     return {
         'message':opt_data.message, 'success':opt_data.success, 'status':opt_data.status,
